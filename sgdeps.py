@@ -28,13 +28,14 @@ class Sg_deps(object):
 
     """to list AWS security group dependencies"""
 
-    def __init__(self, region_name):
+    def __init__(self, region_name, profile_name):
         """collect info for a region """
         if not region_name or region_name not in map(lambda x: x.name, regions()):
             print("\nError: please specify a valid region name with --region ")
             print("  valid regions: " + ", ".join(map(lambda x: x.name, regions()))+ "\n")
             exit(1)
         self.region = region_name
+        self.profile = profile_name
         self.sg_by_id={}
         self.sg_by_name={}
         self.queue = Queue()
@@ -42,7 +43,7 @@ class Sg_deps(object):
         self.service_list = ["ec2", "elb", "rds", "redshift", "elasticache", "eni"]
 
         try:
-            self.sgs =  boto.ec2.connect_to_region(region_name).get_all_security_groups()
+            self.sgs =  boto.ec2.connect_to_region(self.region, profile_name=self.profile).get_all_security_groups()
         except Exception as e:
             print("\nError: please check your credentials and network connectivity\n")
             exit(1)
@@ -81,7 +82,7 @@ class Sg_deps(object):
                     self.sg_by_id[grant.group_id]["deps"].add(sg.id)
 
     def list_eni_sg(self):
-        instances = boto.ec2.connect_to_region(self.region).get_all_network_interfaces()
+        instances = boto.ec2.connect_to_region(self.region, profile_name=self.profile).get_all_network_interfaces()
         for instance in instances:
             name = ""
             if "Name" in instance.tags:
@@ -90,7 +91,7 @@ class Sg_deps(object):
                 self.queue.put(Sg_obj(group.id, "eni", instance.id, name))
 
     def list_ec2_sg(self):
-        instances = reduce(lambda x,y: x+y, map(lambda x: x.instances, boto.ec2.connect_to_region(self.region).get_all_instances()))
+        instances = reduce(lambda x,y: x+y, map(lambda x: x.instances, boto.ec2.connect_to_region(self.region, profile_name=self.profile).get_all_instances()))
         for instance in instances:
             for group in instance.groups:
                 name = ""
@@ -99,22 +100,22 @@ class Sg_deps(object):
                 self.queue.put(Sg_obj(group.id, "ec2", instance.id, name))
 
     def list_elb_sg(self):
-        for elb in boto.ec2.elb.connect_to_region(self.region).get_all_load_balancers():
+        for elb in boto.ec2.elb.connect_to_region(self.region, profile_name=self.profile).get_all_load_balancers():
             for group in elb.security_groups:
                 self.queue.put(Sg_obj(group, "elb", elb.name, ""))
 
     def list_rds_sg(self):
-        for instance in  boto.rds2.connect_to_region(self.region).describe_db_instances()["DescribeDBInstancesResponse"]["DescribeDBInstancesResult"]["DBInstances"]:
+        for instance in  boto.rds2.connect_to_region(self.region, profile_name=self.profile).describe_db_instances()["DescribeDBInstancesResponse"]["DescribeDBInstancesResult"]["DBInstances"]:
             for group in instance["VpcSecurityGroups"]:
                 self.queue.put(Sg_obj(group["VpcSecurityGroupId"], "rds", instance["DBInstanceIdentifier"], ""))
 
     def list_redshift_sg(self):
-        for instance in boto.redshift.connect_to_region(self.region).describe_clusters()["DescribeClustersResponse"]["DescribeClustersResult"]["Clusters"]:
+        for instance in boto.redshift.connect_to_region(self.region, profile_name=self.profile).describe_clusters()["DescribeClustersResponse"]["DescribeClustersResult"]["Clusters"]:
             for group in instance["VpcSecurityGroups"]:
                 self.queue.put(Sg_obj(group["VpcSecurityGroupId"], "redshift",  instance["ClusterIdentifier"], ""))
 
     def list_elasticache_sg(self):
-        for instance in boto.elasticache.connect_to_region(self.region).describe_cache_clusters()["DescribeCacheClustersResponse"]["DescribeCacheClustersResult"]["CacheClusters"]:
+        for instance in boto.elasticache.connect_to_region(self.region, profile_name=self.profile).describe_cache_clusters()["DescribeCacheClustersResponse"]["DescribeCacheClustersResult"]["CacheClusters"]:
             for group in instance["SecurityGroups"]:
                 self.queue.put(Sg_obj(group["SecurityGroupId"], "elasticache", instance["CacheClusterId"], ""))
 
@@ -211,18 +212,19 @@ class Sg_deps(object):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, description="show AWS security group dependencies", epilog=textwrap.dedent('''
-        please setup your boto credentails first.
+        please setup your boto credentials first.
             here's a few options:
              setup environment varialbes: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
              or create one or some of below files (boto will evaluate in order):
                 /etc/boto.cfg
                 ~/.boto
-                ~/.aws/credentials 
+                ~/.aws/credentials
              and put your credentials in the file(s) with below format:
                [Credentials]
                aws_access_key_id = <your_access_key_here>
                aws_secret_access_key = <your_secret_key_here>'''))
     parser.add_argument("--region", choices=map(lambda x: x.name, regions()), help="region connect to")
+    parser.add_argument("--profile", default="default", help="(optional) specify the aws credential profile to use")
     parser.add_argument("--list",action="store_true", help="only output group id/name")
     g = parser.add_mutually_exclusive_group()
     g.add_argument("--obsolete", action="store_true", help="show security group not used by any service")
@@ -230,8 +232,8 @@ if __name__ == "__main__":
     parser.add_argument("security_group", help="security group id or name, id takes precedence, if you have more than one group with same name, this program will show random one, you should use group id instead. leave empty for all groups", default="", nargs="?")
     args=parser.parse_args()
     if args.obsolete:
-        Sg_deps(args.region).show_obsolete_sg(showlist=args.list)
+        Sg_deps(args.region, args.profile).show_obsolete_sg(showlist=args.list)
     elif args.eni_only:
-        Sg_deps(args.region).show_eni_only_sg(showlist=args.list)
+        Sg_deps(args.region, args.profile).show_eni_only_sg(showlist=args.list)
     else:
-        Sg_deps(args.region).show_sg(args.security_group, showlist=args.list)
+        Sg_deps(args.region, args.profile).show_sg(args.security_group, showlist=args.list)
